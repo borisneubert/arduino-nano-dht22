@@ -44,16 +44,16 @@ temperature and humidity for all present sensors is sent every 5 seconds
 #define VERSION (1)
 #define BAUDRATE (115200)
 #define LINEENDING "\r\n"
-#define DEFAULTINTERVAL (5)
+#define DEFAULTINTERVAL (60)
 
 // ---------------------------------------------------------------------------
 
 byte dataPin[4] = {12, 11, 10, 9};
 bool present[4];
 int result[4];
-float T[4];
-float H[4];
-unsigned long int interval = DEFAULTINTERVAL * 1000;
+double T[4];
+double H[4];
+unsigned long int interval = DEFAULTINTERVAL * (unsigned long int) 1000;
 dht DHT;
 
 // ---------------------------------------------------------------------------
@@ -143,7 +143,10 @@ void output(char cmd, int arg1, int arg2) { //
 
 void output(char cmd, int arg1, double arg2) { //
   char txt[128];
-  snprintf(txt, 128, "%c %d %g%s", cmd, arg1, arg2, LINEENDING);
+  // The %f format specifier is not supported on the Arduino.
+  int wholePart = arg2;
+  int fractPart = (arg2 - wholePart) * 10;
+  snprintf(txt, 128, "%c %d %d.%d%s", cmd, arg1, wholePart, fractPart, LINEENDING);
   Serial.print(txt);
 }
 
@@ -168,7 +171,7 @@ void cmdT(int i) { //
 
 void cmdH(int i) { //
   if (present[i])
-    output('t', i, H[i]);
+    output('h', i, H[i]);
   else
     msgError("sensor not present");
 }
@@ -230,6 +233,7 @@ void loop() {
     if (t < t0)
       t0 = t; // counter wraparound
     if (t - t0 > interval) {
+      // measure and output
       for (int i = 0; i < 4; i++)
         if (present[i]) {
           if (measureTH(i)) {
