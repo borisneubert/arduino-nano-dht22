@@ -17,34 +17,36 @@ this program. If not, see <https://www.gnu.org/licenses/>.
 
 /*
 
-commands:
+commands (terminated with CR):
 
-   v    - get version
-   s i  - get presence of sensor i= 0..3
-   t 0  - get temperature of sensor i= 0..3
-   h 0  - get humidity of sensor i= 0..3
-  
-return values:
+   v\r    - get version, also spontaneously sent on initialization
 
-   v n   - version number n
-   s i p - sensor i= 0..3 is present (p=1) or not (p=0)
-   t i T - sensor i= 0..3 temperature T (float)
-   h i H - sensor i= 0..3 humidity H (float)
-   e m   - error msg m (string)
+   d\r    - get data
 
-version information is sent at startup
-presence information for sensors 0..3 is sent at startup
-temperature and humidity for all present sensors is sent every 5 seconds
+return values (terminated with CR)
+
+   v|arduino-nano-dht22|n\r   - version number n
+
+   d|p|t|h|t|h|t|h|t|h        - data
+    p:    binary representation of sensor presence
+          Bit 0:  Sensor 0  .. Bit 3: Sensor 3
+          e.g. 5 = sensors 0 and 2 present
+    |t|h: group of temperature (degrees centigrade) and
+          humidity (percent) readings, float;
+          as many such groups are output as sensors are present,
+          in ascending order
+
+   e|m                        - error msg m (string)
 
 */
 
 #include <Arduino.h>
 #include <dht.h>
 
-#define VERSION (1)
+#define ID ("arduino-nano-dht22")
+#define VERSION (2)
 #define BAUDRATE (115200)
-#define LINEENDING "\r\n"
-#define DEFAULTINTERVAL (60)
+#define LINEENDING "\r"
 
 // ---------------------------------------------------------------------------
 
@@ -53,7 +55,6 @@ bool present[4];
 int result[4];
 double T[4];
 double H[4];
-unsigned long int interval = DEFAULTINTERVAL * (unsigned long int) 1000;
 dht DHT;
 
 // ---------------------------------------------------------------------------
@@ -117,63 +118,32 @@ String errorMsg(int i) {
 //
 // ---------------------------------------------------------------------------
 
-void output(char cmd, const char *arg) { //
-  char txt[128];
-  snprintf(txt, 128, "%c %s%s", cmd, arg, LINEENDING);
-  Serial.print(txt);
-}
-
-void output(char cmd, String arg) { //
-  char txt[128];
-  snprintf(txt, 128, "%c %s%s", cmd, arg.c_str(), LINEENDING);
-  Serial.print(txt);
-}
-
-void output(char cmd, int arg) { //
-  char txt[128];
-  snprintf(txt, 128, "%c %d%s", cmd, arg, LINEENDING);
-  Serial.print(txt);
-}
-
-void output(char cmd, int arg1, int arg2) { //
-  char txt[128];
-  snprintf(txt, 128, "%c %d %d%s", cmd, arg1, arg2, LINEENDING);
-  Serial.print(txt);
-}
-
-void output(char cmd, int arg1, double arg2) { //
-  char txt[128];
-  // The %f format specifier is not supported on the Arduino.
-  int wholePart = arg2;
-  int fractPart = (arg2 - wholePart) * 10;
-  snprintf(txt, 128, "%c %d %d.%d%s", cmd, arg1, wholePart, fractPart, LINEENDING);
-  Serial.print(txt);
-}
-
 void msgError(String msg) { //
-  output('e', msg);
+  Serial.println("e|" + msg);
 }
 
 void cmdVersion() { //
-  output('v', VERSION);
+  char txt[128];
+  snprintf(txt, 128, "v|%s|%d%s", ID, VERSION, LINEENDING);
+  Serial.print(txt);
 }
 
-void cmdSensor(int i) { //
-  output('s', i, present[i]);
-}
-
-void cmdT(int i) { //
-  if (present[i])
-    output('t', i, T[i]);
-  else
-    msgError("sensor not present");
-}
-
-void cmdH(int i) { //
-  if (present[i])
-    output('h', i, H[i]);
-  else
-    msgError("sensor not present");
+void cmdData() {
+  String result = "";
+  int p = 0, b = 1;
+  for (int i = 0; i < 4; i++) {
+    if (present[i]) {
+      p += b;
+      if (measureTH(i)) {
+        result += "|" + String(T[i]) + '|' + String(H[i]);
+      } else {
+        msgError(errorMsg(i));
+        return;
+      }
+    }
+    b *= 2;
+  }
+  Serial.print("d|" + String(p, HEX) + result + LINEENDING);
 }
 
 int exec(String command) {
@@ -181,29 +151,14 @@ int exec(String command) {
   command.trim();
   if (command.length() == 0)
     return 0;
-  char c;
-  int i;
-  sscanf(command.c_str(), "%c %d", &c, &i);
-  if ((i < 0) || (i > 3))
-    i = 0;
-  switch (c) {
-  case 'v':
+  if (command == "v")
     cmdVersion();
-    break;
-  case 's':
-    cmdSensor(i);
-    break;
-  case 't':
-    cmdT(i);
-    break;
-  case 'h':
-    cmdH(i);
-    break;
-  default:
+  else if (command == "d")
+    cmdData();
+  else {
     msgError("unknown command");
-    break;
+    return 0;
   }
-
   return 1;
 }
 
@@ -215,43 +170,21 @@ int exec(String command) {
 
 void setup() {
   Serial.begin(BAUDRATE);
-  cmdVersion();
   findSensors();
-  for (int i = 0; i < 4; i++)
-    cmdSensor(i);
+  cmdVersion();
 }
 
 void loop() {
 
   String command = "";
-  unsigned long int t0, t;
-
-  t0 = millis();
   while (1) {
-    // periodically output readings
-    t = millis();
-    if (t < t0)
-      t0 = t; // counter wraparound
-    if (t - t0 > interval) {
-      // measure and output
-      for (int i = 0; i < 4; i++)
-        if (present[i]) {
-          if (measureTH(i)) {
-            cmdT(i);
-            cmdH(i);
-          } else
-            msgError(errorMsg(i));
-        }
-      t0 = t;
-    }
-
     if (Serial.available() > 0) {
       char inByte = Serial.read();
       // Serial.print(inByte); // no echo
       switch (inByte) {
-      case 13:
-        break;
       case 10:
+        break;
+      case 13:
         exec(command);
         command = "";
         break;
